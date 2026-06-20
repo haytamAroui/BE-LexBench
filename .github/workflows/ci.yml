@@ -32,6 +32,11 @@ jobs:
           pip install ruff
           ruff check harness/ tests/
 
+      - name: Type check (mypy)
+        run: |
+          pip install mypy types-requests
+          mypy harness/
+
       - name: Import smoke test
         run: |
           python -c "from harness import scorers, judge, run_eval, models, stats"

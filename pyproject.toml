@@ -39,6 +39,8 @@ dependencies = [
     "anthropic",
     # Item validation against eval_item.schema.json at load time
     "jsonschema",
+    # Async concurrent model calls
+    "aiohttp",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +49,8 @@ dependencies = [
 vertex = ["anthropic[vertex]"]
 # Local HuggingFace checkpoint inference (HFLocalClient only)
 local = ["torch>=2.0", "transformers>=4.40", "peft"]
+# Language detection optional dependency
+langdetect = ["langdetect"]
 
 [project.urls]
 Repository = "https://github.com/BE-LexBench/be-lexbench"
@@ -57,7 +61,7 @@ Changelog = "https://github.com/BE-LexBench/be-lexbench/blob/main/CHANGELOG.md"
 line-length = 100
 
 [tool.ruff.format]
-quote-style = "single"
+quote-style = 'single'
 
 [project.scripts]
 be-lexbench = "harness.run_eval:main"
@@ -70,3 +74,30 @@ packages = ["harness"]
 [tool.setuptools.package-data]
 # Exclude data files from the wheel — they are never part of the installed package.
 harness = []
+
+[tool.pytest.ini_options]
+addopts = "--basetemp=tmp_test"
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = [
+    "anthropic.*",
+    "jsonschema.*",
+    "transformers.*",
+    "torch.*",
+    "peft.*",
+    "langdetect.*"
+]
+ignore_missing_imports = true
+

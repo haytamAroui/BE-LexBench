@@ -41,23 +41,50 @@ to any future contributor adding a file open() to this module.
 
 from __future__ import annotations
 import argparse
+import asyncio
 import json
+import logging
 import os
 import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
-
 from statistics import mean
+from typing import Optional, Any
 
 from . import models as M
 from . import scorers as S
 from . import judge as J
 from . import stats as ST
 
+# Setup logger for the run_eval module
+logger = logging.getLogger("be-lexbench")
+
 # Schema path relative to the package root (cblre-main/schema/).
 _SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                             "schema", "eval_item.schema.json")
+
+
+class AsyncRateLimiter:
+    """Delay-based rate limiter for API requests."""
+    def __init__(self, requests_per_minute: Optional[float] = None):
+        self.rpm = requests_per_minute
+        self.delay = 60.0 / requests_per_minute if requests_per_minute else 0.0
+        self.last_call = 0.0
+        self.lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        if not self.rpm:
+            return
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_call
+            to_wait = self.delay - elapsed
+            if to_wait > 0:
+                await asyncio.sleep(to_wait)
+                self.last_call = time.time()
+            else:
+                self.last_call = now
 
 
 def _validate_items(items: list[dict]) -> None:
@@ -71,11 +98,11 @@ def _validate_items(items: list[dict]) -> None:
     try:
         import jsonschema
     except ImportError:
-        print("[run] WARNING: jsonschema not installed — skipping item validation. "
-              "Install with: pip install jsonschema")
+        logger.warning("[run] jsonschema not installed — skipping item validation. "
+                       "Install with: pip install jsonschema")
         return
     if not os.path.exists(_SCHEMA_PATH):
-        print(f"[run] WARNING: schema file not found at {_SCHEMA_PATH} — skipping validation")
+        logger.warning(f"[run] schema file not found at {_SCHEMA_PATH} — skipping validation")
         return
     with open(_SCHEMA_PATH, encoding="utf-8") as f:
         schema = json.load(f)
@@ -87,12 +114,13 @@ def _validate_items(items: list[dict]) -> None:
                 f"Item {i} (id={item.get('id', '???')}) failed schema validation: "
                 f"{e.message}"
             ) from e
-    print(f"[run] {len(items)} items validated against schema")
+    logger.info(f"[run] {len(items)} items validated against schema")
 
 
-def _generate_with_retry(client, prompt, *, system=None, context=None,
-                         tools=None, max_tokens=512, temperature=0.0,
-                         max_attempts=3, backoff_base=2.0):
+def _generate_with_retry(client: Any, prompt: str, *, system: Optional[str] = None,
+                         context: Optional[Any] = None, tools: Optional[list] = None,
+                         max_tokens: int = 512, temperature: float = 0.0,
+                         max_attempts: int = 3, backoff_base: float = 2.0) -> Any:
     """Wrap client.generate() with exponential backoff for transient failures.
 
     Catches network errors, timeouts, and server-side failures (5xx). On the
@@ -109,10 +137,9 @@ def _generate_with_retry(client, prompt, *, system=None, context=None,
             if attempt == max_attempts:
                 raise
             wait = backoff_base ** (attempt - 1)
-            print(
+            logger.warning(
                 f"[retry] attempt {attempt}/{max_attempts} failed: "
-                f"{type(e).__name__}: {e}. Retrying in {wait:.0f}s...",
-                file=sys.stderr,
+                f"{type(e).__name__}: {e}. Retrying in {wait:.0f}s..."
             )
             time.sleep(wait)
 
@@ -250,7 +277,54 @@ def score_one(item: dict, response: str, judge_clients: list) -> dict:
     return result
 
 
-def main():
+async def run_async(
+    args: argparse.Namespace,
+    client: M.ModelClient,
+    judge_clients: list[M.ModelClient],
+    items: list[dict],
+    done: set[str],
+    results_path: str,
+) -> None:
+    sem = asyncio.Semaphore(args.concurrency)
+    rate_limiter = AsyncRateLimiter(args.rpm)
+    write_lock = asyncio.Lock()
+
+    with open(results_path, "a", encoding="utf-8") as out:
+        async def process_item(it: dict) -> None:
+            if it["id"] in done:
+                return
+            async with sem:
+                await rate_limiter.wait()
+                prompt = it["prompt"]
+                if it.get("format") == "mcq" and it.get("choices"):
+                    prompt = (prompt.rstrip() + "\n" + "\n".join(it["choices"])
+                              + "\n\nAnswer with ONLY the letter of the correct option.")
+                gen = await asyncio.to_thread(
+                    _generate_with_retry,
+                    client, prompt, system=it.get("system"),
+                    context=it.get("context"), tools=it.get("tools"),
+                    max_tokens=args.max_tokens, temperature=args.temperature,
+                )
+                scored = await asyncio.to_thread(score_one, it, gen.text, judge_clients)
+                row = {
+                    "id": it["id"], "track": it["track"], "language": it["language"],
+                    "difficulty": it["difficulty"], "parity_group": it.get("parity_group"),
+                    "response": gen.text, "latency_s": round(gen.latency_s, 2),
+                    "score": scored["final_score"], "scoring_method": it["scoring"]["method"],
+                    "programmatic": scored["programmatic"], "judge": scored["judge"],
+                    "canary": it["provenance"]["canary"],
+                }
+                async with write_lock:
+                    out.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    out.flush()
+                    ss = "?" if scored["final_score"] is None else f"{scored['final_score']:.2f}"
+                    logger.info(f"  [{it['id']:<28}] {it['track']:<22} score={ss}")
+
+        tasks = [process_item(it) for it in items]
+        await asyncio.gather(*tasks)
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--items", required=True)
     ap.add_argument("--model", required=True, help="JSON client spec")
@@ -260,7 +334,18 @@ def main():
     ap.add_argument("--out-dir", default="./results")
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--concurrency", type=int, default=1, help="Max concurrent model calls")
+    ap.add_argument("--rpm", "--requests-per-minute", type=float, default=None, help="Rate limit in requests per minute")
     args = ap.parse_args()
+
+    # Configure logging
+    logging.basicConfig(level=logging.WARNING)
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.propagate = False
 
     out_dir = os.path.join(args.out_dir, args.run_id)
     os.makedirs(out_dir, exist_ok=True)
@@ -270,55 +355,26 @@ def main():
     items = load_items(args.items)
     _validate_items(items)
     done = load_done(results_path)
-    print(f"[run] {len(items)} items, {len(done)} already done")
+    logger.info(f"[run] {len(items)} items, {len(done)} already done")
 
     client = M.build_client(json.loads(args.model))
     judge_clients = [M.build_client(json.loads(j)) for j in args.judge]
     if not judge_clients:
-        print("[run] WARNING: no judge configured — rubric items will be unscored")
+        logger.warning("[run] no judge configured — rubric items will be unscored")
 
-    with open(results_path, "a", encoding="utf-8") as out:
-        for it in items:
-            if it["id"] in done:
-                continue
-            # MCQ items must present the options to the model and constrain the
-            # answer to a letter — otherwise the model answers in prose and there
-            # is no letter to score. Applied identically to every model (format
-            # protocol, not a content change).
-            prompt = it["prompt"]
-            if it.get("format") == "mcq" and it.get("choices"):
-                prompt = (prompt.rstrip() + "\n" + "\n".join(it["choices"])
-                          + "\n\nAnswer with ONLY the letter of the correct option.")
-            gen = _generate_with_retry(
-                client, prompt, system=it.get("system"),
-                context=it.get("context"), tools=it.get("tools"),
-                max_tokens=args.max_tokens, temperature=args.temperature,
-            )
-            scored = score_one(it, gen.text, judge_clients)
-            row = {
-                "id": it["id"], "track": it["track"], "language": it["language"],
-                "difficulty": it["difficulty"], "parity_group": it.get("parity_group"),
-                "response": gen.text, "latency_s": round(gen.latency_s, 2),
-                "score": scored["final_score"], "scoring_method": it["scoring"]["method"],
-                "programmatic": scored["programmatic"], "judge": scored["judge"],
-                "canary": it["provenance"]["canary"],
-            }
-            out.write(json.dumps(row, ensure_ascii=False) + "\n")
-            out.flush()
-            ss = "?" if scored["final_score"] is None else f"{scored['final_score']:.2f}"
-            print(f"  [{it['id']:<28}] {it['track']:<22} score={ss}")
+    asyncio.run(run_async(args, client, judge_clients, items, done, results_path))
 
     aggregate(results_path, summary_path, args.run_id,
               json.loads(args.model), [json.loads(j) for j in args.judge])
-    print(f"[run] summary -> {summary_path}")
+    logger.info(f"[run] summary -> {summary_path}")
 
 
-def aggregate(results_path, summary_path, run_id, model_spec, judge_specs):
+def aggregate(results_path: str, summary_path: str, run_id: str, model_spec: dict, judge_specs: list[dict]) -> None:
     with open(results_path, encoding="utf-8") as f:
         rows = [json.loads(line) for line in f]
     by_track = defaultdict(list)
-    lang_acc = defaultdict(lambda: defaultdict(list))   # track -> lang -> scores
-    diff_acc = defaultdict(lambda: defaultdict(list))   # track -> difficulty -> scores
+    lang_acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))   # track -> lang -> scores
+    diff_acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))   # track -> difficulty -> scores
     unscored = 0
     for r in rows:
         if r["score"] is None:

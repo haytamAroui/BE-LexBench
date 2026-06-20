@@ -237,6 +237,17 @@ class TestKeywordCoverage:
             assert r["score"] == 0.0, f"detected? {response!r} vs must_not {must_not}"
             assert must_not[0] in r["detail"]["present_forbidden"]
 
+    def test_must_not_include_with_global_strip(self):
+        """With global_strip=True in the item, mid-sentence determiners are stripped before matching."""
+        item = _kw_item(must_not_include=["article 1382 bw"])
+        item["scoring"]["global_strip"] = True
+        r = keyword_coverage(
+            "Sur la base de l'article 1382 BW, la responsabilité est engagée.",
+            item,
+        )
+        assert r["score"] == 0.0
+        assert "article 1382 bw" in r["detail"]["present_forbidden"]
+
     def test_must_include_works_with_determiner_strip(self):
         """After normalising 'het Hof' -> 'hof', must_include=['hof'] should match."""
         r = keyword_coverage(
@@ -315,6 +326,11 @@ class TestNormalize:
     def test_preserves_inner_words(self):
         """'het' inside a sentence (capital of 'De') is NOT stripped — only leading."""
         assert _normalize("X en het Y") == "x en het y"
+
+    def test_global_strip_mode_strips_mid_sentence(self):
+        """When global_strip=True, _normalize strips determiners mid-sentence."""
+        assert _normalize("selon l'article 1382 BW", global_strip=True) == "selon article 1382 bw"
+        assert _normalize("sur la base de l'article", global_strip=True) == "sur base article"
 
     def test_empty_input(self):
         assert _normalize("") == ""

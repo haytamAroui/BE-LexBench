@@ -18,10 +18,13 @@ and record which model + version was the judge.
 
 from __future__ import annotations
 import json
+import logging
 import re
 import sys
 import time
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Anchored 0-4 scale reused by most rubrics; rescaled to 0-1 at aggregation.
@@ -318,16 +321,16 @@ def judge_item(item: dict, answer: str, judge_clients: list) -> dict:
                 break
             except Exception as e:
                 if attempt == 3:
-                    print(
-                        f"[judge] WARNING: judge {getattr(jc, 'model_id', '?')} "
-                        f"failed after 3 attempts: {e}", file=sys.stderr,
+                    logger.warning(
+                        f"[judge] judge {getattr(jc, 'model_id', '?')} "
+                        f"failed after 3 attempts: {e}"
                     )
                     break
                 wait = 2.0 ** (attempt - 1)
-                print(
+                logger.info(
                     f"[judge-retry] attempt {attempt}/3 for "
                     f"{getattr(jc, 'model_id', '?')} failed: {e}. "
-                    f"Retrying in {wait:.0f}s...", file=sys.stderr,
+                    f"Retrying in {wait:.0f}s..."
                 )
                 time.sleep(wait)
         if out is None:

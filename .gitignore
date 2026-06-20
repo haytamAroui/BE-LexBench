@@ -29,3 +29,7 @@ build/
 
 # Block run results
 /results/
+
+# Pytest base temp directory
+/tmp_test/
+

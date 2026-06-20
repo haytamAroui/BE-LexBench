@@ -24,10 +24,13 @@ raw text so the track-9 scorer can parse whatever format the model emitted.
 
 from __future__ import annotations
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,7 +52,7 @@ class ModelClient:
         raise NotImplementedError
 
     @staticmethod
-    def _build_messages(prompt, system, context):
+    def _build_messages(prompt: str, system: Optional[str], context: Optional[Any]) -> list[dict[str, str]]:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -60,7 +63,7 @@ class ModelClient:
         return messages
 
     @staticmethod
-    def _build_system_and_user(prompt, system, context):
+    def _build_system_and_user(prompt: str, system: Optional[str], context: Optional[Any]) -> tuple[Optional[str], str]:
         """For Messages-API providers (Anthropic/Vertex): system is a separate
         top-level field, not a message. Returns (system_str_or_None, user_str)."""
         sys_parts = []
@@ -72,7 +75,7 @@ class ModelClient:
         return ("\n\n".join(sys_parts) if sys_parts else None), prompt
 
     @staticmethod
-    def _openai_tools_to_anthropic(tools):
+    def _openai_tools_to_anthropic(tools: Optional[list]) -> list[dict[str, Any]]:
         out = []
         for t in tools or []:
             fn = t.get("function", t)
@@ -113,8 +116,8 @@ class HFLocalClient(ModelClient):
             self.model = AutoModelForImageTextToText.from_pretrained(model_path, **common).eval()
             self.is_vision = True
         except (ValueError, KeyError) as e:
-            print(f"[hf] {self.model_id}: not image-text ({type(e).__name__}); "
-                  f"loading as text-only causal LM")
+            logger.warning(f"[hf] {self.model_id}: not image-text ({type(e).__name__}); "
+                           f"loading as text-only causal LM")
             self.model = AutoModelForCausalLM.from_pretrained(model_path, **common).eval()
             self.is_vision = False
 
@@ -125,7 +128,7 @@ class HFLocalClient(ModelClient):
         # improvement" readings. Better to crash than to mislead.
         if adapter:
             from peft import PeftModel
-            print(f"[hf] applying PEFT adapter: {adapter}")
+            logger.info(f"[hf] applying PEFT adapter: {adapter}")
             self.model = PeftModel.from_pretrained(self.model, adapter)
             self.model.eval()
             self.model_id = f"{self.model_id}+{os.path.basename(adapter.rstrip('/'))}"
@@ -133,8 +136,9 @@ class HFLocalClient(ModelClient):
         self.tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         self.device = device
 
-    def generate(self, prompt, system=None, context=None, tools=None,
-                 max_tokens=512, temperature=0.0) -> GenResult:
+    def generate(self, prompt: str, system: Optional[str] = None,
+                 context: Optional[Any] = None, tools: Optional[list] = None,
+                 max_tokens: int = 512, temperature: float = 0.0) -> GenResult:
         messages = self._build_messages(prompt, system, context)
         tmpl_kwargs = dict(add_generation_prompt=True, return_tensors="pt", return_dict=True)
         if self.thinking_kw:
@@ -146,7 +150,8 @@ class HFLocalClient(ModelClient):
             enc = self.tok.apply_chat_template(messages, **tmpl_kwargs)
         except TypeError:
             tmpl_kwargs.pop("tools", None)
-            tmpl_kwargs.pop(self.thinking_kw, None)
+            if self.thinking_kw is not None:
+                tmpl_kwargs.pop(self.thinking_kw, None)
             enc = self.tok.apply_chat_template(messages, **tmpl_kwargs)
         enc = {k: v.to(self.device) for k, v in enc.items()}
         ilen = enc["input_ids"].shape[1]
@@ -199,15 +204,16 @@ class OpenAICompatClient(ModelClient):
         self.send_tools = send_tools
         self.chat_template_kwargs = chat_template_kwargs
 
-    def generate(self, prompt, system=None, context=None, tools=None,
-                 max_tokens=512, temperature=0.0) -> GenResult:
+    def generate(self, prompt: str, system: Optional[str] = None,
+                 context: Optional[Any] = None, tools: Optional[list] = None,
+                 max_tokens: int = 512, temperature: float = 0.0) -> GenResult:
         import sys
         import requests
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        def _post(msgs, send_tools):
+        def _post(msgs: list[dict[str, str]], send_tools: bool) -> requests.Response:
             body = {"model": self.model_id, "messages": msgs,
                     "max_tokens": max_tokens, "temperature": temperature, "stream": False}
             if tools and self.send_tools and send_tools:
@@ -243,15 +249,14 @@ class OpenAICompatClient(ModelClient):
         if not text:
             for reasoning_key in ("reasoning_content", "reasoning", "thinking"):
                 if msg.get(reasoning_key):
-                    print(
-                        f"[be-lexbench] WARNING: message.content is null/empty but "
+                    logger.warning(
+                        f"[be-lexbench] message.content is null/empty but "
                         f"'{reasoning_key}' is present.\n"
                         f"  Qwen3 family: add \"chat_template_kwargs\": "
                         f"{{\"enable_thinking\": false}} to your --model spec.\n"
                         f"  DeepSeek-R1 / QwQ: check that vLLM's --reasoning-parser "
                         f"is routing the final answer into message.content.\n"
-                        f"  Scoring this item as empty answer.",
-                        file=sys.stderr,
+                        f"  Scoring this item as empty answer."
                     )
                     break
 
@@ -260,19 +265,16 @@ class OpenAICompatClient(ModelClient):
         return GenResult(text=text, raw=data, model_id=self.model_id, latency_s=time.time() - t0)
 
 
-class AnthropicClient(ModelClient):
-    """Native Anthropic API (api.anthropic.com). Works with any model available
-    via api.anthropic.com. Auth via ANTHROPIC_API_KEY or explicit api_key."""
+class _BaseAnthropicClient(ModelClient):
+    """Base class for Anthropic clients to avoid duplicated generate() logic."""
 
-    def __init__(self, model_name: str, api_key: Optional[str] = None):
-        import anthropic
-        self.model_id = model_name
-        self.client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+    client: Any  # Subclasses must initialize self.client
 
-    def generate(self, prompt, system=None, context=None, tools=None,
-                 max_tokens=512, temperature=0.0) -> GenResult:
+    def generate(self, prompt: str, system: Optional[str] = None,
+                 context: Optional[Any] = None, tools: Optional[list] = None,
+                 max_tokens: int = 512, temperature: float = 0.0) -> GenResult:
         sys_str, user_str = self._build_system_and_user(prompt, system, context)
-        kwargs = dict(
+        kwargs: dict[str, Any] = dict(
             model=self.model_id,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -300,7 +302,17 @@ class AnthropicClient(ModelClient):
                          model_id=self.model_id, latency_s=time.time() - t0)
 
 
-class VertexAnthropicClient(ModelClient):
+class AnthropicClient(_BaseAnthropicClient):
+    """Native Anthropic API (api.anthropic.com). Works with any model available
+    via api.anthropic.com. Auth via ANTHROPIC_API_KEY or explicit api_key."""
+
+    def __init__(self, model_name: str, api_key: Optional[str] = None):
+        import anthropic
+        self.model_id = model_name
+        self.client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+
+class VertexAnthropicClient(_BaseAnthropicClient):
     """
     Claude via Google Vertex AI (anthropic[vertex]). Alternative access path to
     the canonical judge for teams already on GCP — same model as the native
@@ -320,38 +332,6 @@ class VertexAnthropicClient(ModelClient):
         self.project = project
         self.region = region
         self.client = AnthropicVertex(project_id=project, region=region)
-
-    def generate(self, prompt, system=None, context=None, tools=None,
-                 max_tokens=512, temperature=0.0) -> GenResult:
-        sys_str, user_str = self._build_system_and_user(prompt, system, context)
-        kwargs = dict(
-            model=self.model_id,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "user", "content": user_str}],
-        )
-        if sys_str:
-            kwargs["system"] = sys_str
-        if tools:
-            kwargs["tools"] = self._openai_tools_to_anthropic(tools)
-        t0 = time.time()
-        msg = self.client.messages.create(**kwargs)
-        text_parts = []
-        for block in msg.content:
-            if getattr(block, "type", None) == "text":
-                text_parts.append(block.text)
-            elif getattr(block, "type", None) == "tool_use":
-                # Serialize into the trained <tool_call> shape so the Track-9
-                # scorer parses Claude's tool use uniformly with every other model.
-                text_parts.append(
-                    "<tool_call>"
-                    + json.dumps({"name": block.name, "arguments": block.input})
-                    + "</tool_call>"
-                )
-        return GenResult(text="\n".join(text_parts).strip(),
-                         raw={"id": getattr(msg, "id", ""),
-                              "model": getattr(msg, "model", "")},
-                         model_id=self.model_id, latency_s=time.time() - t0)
 
 
 def build_client(spec: dict) -> ModelClient:
@@ -404,6 +384,8 @@ def build_client(spec: dict) -> ModelClient:
                                   chat_template_kwargs=chat_template_kwargs)
     if kind in ("vertex_anthropic", "vertex"):
         project = spec.get("project") or spec.get("project_id")
+        if not project:
+            raise ValueError("vertex_anthropic kind requires project or project_id in spec")
         region = spec.get("region", "us-east5")
         return VertexAnthropicClient(spec["model_name"], project, region=region)
     if kind == "anthropic":

@@ -15,6 +15,15 @@ judge in judge.py must produce the real score. Programmatic scorers never
 from __future__ import annotations
 import json
 import re
+from typing import Callable, Optional
+
+try:
+    import langdetect
+    from langdetect import DetectorFactory
+    DetectorFactory.seed = 0
+    _HAS_LANGDETECT = True
+except ImportError:
+    _HAS_LANGDETECT = False
 
 
 # ── Citation patterns (Belgian) ─────────────────────────────────────────────
@@ -91,8 +100,8 @@ _BE_CITE_PATTERNS = (
 )
 
 
-def _normalize(s: str) -> str:
-    """Lowercase + collapse whitespace + strip leading NL/FR determiners.
+def _normalize(s: str, global_strip: bool = False) -> str:
+    """Lowercase + collapse whitespace + strip leading (or global) NL/FR determiners.
 
     The determiner strip is the critical change for must_not_include to be
     a real gate: a model writing "l'article 1382 BW" must FAIL a
@@ -111,21 +120,31 @@ def _normalize(s: str) -> str:
     commenting the chain so a future contributor does not reorder.
     """
     s = re.sub(r"\s+", " ", (s or "")).strip().lower()
-    # 1) Apostrophe forms — no trailing-whitespace requirement (FR concatenates them).
-    s = re.sub(
-        r"^(?:l'|d'|qu')",
-        "", s,
-    ).lstrip()
-    # 2) Word-form single-token determiners — trailing whitespace required.
-    s = re.sub(
-        r"^(?:het|een|la|le|les|un|une|des|du|'t|'n)\s+",
-        " ", s,
-    ).strip()
-    # 3) Two-token forms trailing word-form above (e.g. 'de la jurisprudence').
-    s = re.sub(
-        r"^(?:de la|de)\s+",
-        "", s,
-    ).strip()
+    if global_strip:
+        # 1) Apostrophe forms globally.
+        s = re.sub(r"(?:^|(?<=\s))(?:l'|d'|qu')", "", s)
+        # 2) Two-token forms globally.
+        s = re.sub(r"\b(?:de la|de)\b", "", s)
+        # 3) Word-form single-token determiners globally.
+        s = re.sub(r"(?:^|(?<=\s))(?:het|een|la|le|les|un|une|des|du|'t|'n)(?=\s|$)", "", s)
+        # Collapse spaces and strip again
+        s = re.sub(r"\s+", " ", s).strip()
+    else:
+        # 1) Apostrophe forms — no trailing-whitespace requirement (FR concatenates them).
+        s = re.sub(
+            r"^(?:l'|d'|qu')",
+            "", s,
+        ).lstrip()
+        # 2) Word-form single-token determiners — trailing whitespace required.
+        s = re.sub(
+            r"^(?:het|een|la|le|les|un|une|des|du|'t|'n)\s+",
+            " ", s,
+        ).strip()
+        # 3) Two-token forms trailing word-form above (e.g. 'de la jurisprudence').
+        s = re.sub(
+            r"^(?:de la|de)\s+",
+            "", s,
+        ).strip()
     return s
 
 
@@ -141,7 +160,7 @@ _MCQ_STOP = set("the a an of to in for and or with except as is are be by which 
                 "all cases case law laws under except".split())
 
 
-def _mcq_content_match(response: str, choices: list):
+def _mcq_content_match(response: str, choices: list[str]) -> Optional[str]:
     """When the model answers in prose instead of a letter, map its text back to
     the best-matching option body. Requires a clear winner (≥3 matched content
     words and a ≥2-word margin over the runner-up) to avoid degenerate matches on
@@ -195,9 +214,9 @@ def mcq_exact(response: str, item: dict) -> dict:
     # 2) bare letter alone on the FINAL non-empty line
     if not picked:
         for ln in reversed([line.strip() for line in response.splitlines() if line.strip()]):
-            m = re.fullmatch(r"\(?([A-Ea-e])\)?[\.\)]?", ln)
-            if m:
-                picked, how = m.group(1).upper(), "final_line_letter"
+            m_full = re.fullmatch(r"\(?([A-Ea-e])\)?[\.\)]?", ln)
+            if m_full:
+                picked, how = m_full.group(1).upper(), "final_line_letter"
                 break
     # 3) content-match against option bodies
     if not picked and item.get("choices"):
@@ -234,13 +253,21 @@ _EN_MARKERS = (" the ", " and ", " of ", " is ", " under ", " must ", " which ")
 
 
 def _detect_language(text: str) -> str:
-    """Lightweight NL/FR/EN detector. Replace with fastText lid.176 for release.
+    """Lightweight NL/FR/EN detector. Uses langdetect if available, with heuristic fallback.
 
     NL/FR are the canonical pair for be-lexbench; "en" is detected as a
     last-resort fallback for stray English text in items that should remain in
     NL/FR (e.g. mixed citations, paraphrased law names). Callers should treat
     the "en" return as "needs human review" rather than a positive identification.
     """
+    if _HAS_LANGDETECT:
+        try:
+            det = langdetect.detect(text)
+            if det in ('nl', 'fr', 'en'):
+                return det
+        except Exception:
+            pass
+
     t = f" {text.lower()} "
     nl = sum(t.count(m) for m in _NL_MARKERS)
     fr = sum(t.count(m) for m in _FR_MARKERS)
@@ -256,8 +283,9 @@ def _detect_language(text: str) -> str:
 def language_adherence(response: str, item: dict) -> dict:
     want = item["language"]
     got = _detect_language(response)
+    detector = "langdetect" if _HAS_LANGDETECT else "heuristic"
     return {"score": 1.0 if got == want else 0.0,
-            "detail": {"want": want, "got": got, "note": "heuristic; replace with fastText for release"},
+            "detail": {"want": want, "got": got, "detector": detector, "note": f"using {detector}"},
             "needs_judge": False}
 
 
@@ -276,7 +304,7 @@ def extract_citations(text: str) -> list[str]:
     return out
 
 
-def citation_validity(response: str, item: dict, verifier=None) -> dict:
+def citation_validity(response: str, item: dict, verifier: Optional[Callable[[str], bool]] = None) -> dict:
     """
     verifier: optional callable(citation_str) -> bool that checks real existence
     (e.g. a CanLII lookup). Without one we (a) match against the item's known-good
@@ -351,11 +379,12 @@ def keyword_coverage(response: str, item: dict) -> dict:
       * Trade-off: Italian 'la' is geometrically identical to FR 'la' and IS
         stripped. Per-language detection is out of scope for this gate.
     """
-    r = _normalize(response)
+    global_strip = item["scoring"].get("global_strip", False)
+    r = _normalize(response, global_strip=global_strip)
     inc = item["scoring"].get("must_include", [])
     exc = item["scoring"].get("must_not_include", [])
-    missing = [k for k in inc if _normalize(k) not in r]
-    present_bad = [k for k in exc if _normalize(k) in r]
+    missing = [k for k in inc if _normalize(k, global_strip=global_strip) not in r]
+    present_bad = [k for k in exc if _normalize(k, global_strip=global_strip) in r]
     ok = (not missing) and (not present_bad)
     return {"score": 1.0 if ok else 0.0,
             "detail": {"missing_required": missing, "present_forbidden": present_bad},
@@ -395,7 +424,7 @@ def refusal(response: str, item: dict) -> dict:
 _TOOLCALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
 
-def _extract_tool_call(text: str):
+def _extract_tool_call(text: str) -> Optional[tuple[Optional[str], dict, str]]:
     """Return (name, args_dict, fmt) from whatever format the model used, or None.
     fmt is one of: json_tag | xml_function | openai_structured | python_style.
     Only json_tag is the canonical trained format an OpenAI-style harness can
@@ -431,9 +460,9 @@ def _extract_tool_call(text: str):
     except Exception:
         pass
     # 4) python-style  name("...")
-    pm = re.search(r"\b([a-zA-Z_]\w*)\s*\(\s*([\"'])(.*?)\2\s*\)", text)
-    if pm:
-        return pm.group(1), {"query": pm.group(3)}, "python_style"
+    pym = re.search(r"\b([a-zA-Z_]\w*)\s*\(\s*([\"'])(.*?)\2\s*\)", text)
+    if pym:
+        return pym.group(1), {"query": pym.group(3)}, "python_style"
     return None
 
 

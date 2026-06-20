@@ -9,8 +9,11 @@ as "not distinguishable", never as a ranking.
 """
 
 from __future__ import annotations
+import logging
 import random
 from statistics import mean
+
+logger = logging.getLogger(__name__)
 
 
 def bootstrap_ci(scores: list[float], n_boot: int = 10000,
@@ -21,6 +24,11 @@ def bootstrap_ci(scores: list[float], n_boot: int = 10000,
         return {"n": 0, "mean_pct": None, "ci_low_pct": None, "ci_high_pct": None}
     rng = random.Random(seed)
     n = len(scores)
+    if n < 20:
+        logger.warning(
+            "Bootstrap CI: sample size n=%d is too small for meaningful confidence intervals "
+            "(minimum recommended n is 20).", n
+        )
     boots = []
     for _ in range(n_boot):
         sample = [scores[rng.randrange(n)] for _ in range(n)]
