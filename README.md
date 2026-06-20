@@ -17,43 +17,45 @@ The item bank, gold answers, and held-out scoring split are not published here. 
 
 ---
 
-## Architecture Overview
+## How It Works: The Scoring & Gating Pipeline
 
-The `be-lexbench` harness is organized as a modular, split-design pipeline. It loads evaluation items, validates them against the schema, invokes model clients, scores responses using programmatic or judge-based rules, and aggregates the results with bootstrap confidence intervals.
+The `be-lexbench` evaluation runner processes items through a multi-stage execution pipeline designed to guarantee high-performance, cost efficiency, and evaluation integrity:
 
-```mermaid
-graph TD
-    A["CLI Entry<br>run_eval.py → main()"] --> B["Load Items<br>JSONL + Schema Validation"]
-    B --> C["Model Client<br>models.py → build_client()"]
-    C --> D["Generate Response<br>with retry + backoff"]
-    D --> E["score_one()<br>Routing Engine"]
-    E --> F{"Scoring Method?"}
-    F -->|rubric| G["Keyword Gate → Language Gate → LLM Judge"]
-    F -->|mcq_exact| H["Final-Committed-Answer Extraction"]
-    F -->|citation_validity| I["Citation Pattern Matching + Gold Match"]
-    F -->|refusal| J["Refusal Marker Detection"]
-    F -->|tool_call| K["Tool-Call Parsing (4 formats)"]
-    F -->|keyword_coverage| L["Must-Include / Must-Not Gate"]
-    F -->|language_adherence| M["NL/FR/EN Detection"]
-    G --> N["Aggregate → summary.json"]
-    H --> N
-    I --> N
-    J --> N
-    K --> N
-    L --> N
-    M --> N
-    N --> O["Bootstrap CIs + Bilingual Parity"]
+```
+[Load JSONL Items] ➔ [Async Concurrency / Rate Limiter] ➔ [Model Inference]
+                                                                  │
+┌───────────────────────── [Score Routing Engine] ────────────────┘
+│
+├─► Rubric Path ➔ [Keyword Gate] ➔ [Language Gate] ➔ [LLM Judge Ensemble]
+│
+└─► Programmatic Path ➔ [Scorer Cascade (MCQ, Refusal, Tool, Citations)]
+                                                                  │
+                                                                  ▼
+                                                   [Bootstrap CIs & Parity Ratios]
 ```
 
-### Module Architecture
+### 1. Execution Orchestration (Async & Rate-Limited)
+To evaluate large benchmarks quickly without overwhelming target APIs, the harness runs an asynchronous orchestration loop.
+*   **Concurrency Limiting**: Uses `asyncio.Semaphore` (via `--concurrency N`) to run multiple target model calls and judges concurrently.
+*   **Request Throttling**: Uses a token-bucket rate limiter (via `--rpm N`) to regulate API request frequency, preventing rate limit errors on hosted providers (OpenAI, Anthropic, Together).
 
-The codebase is organized into five core modules under `harness/`:
+### 2. Guarded Evaluation Flow (Gates & Judges)
+For open-ended legal reasoning tasks (`method: rubric`), the harness routes answers through successive verification gates before querying an LLM Judge:
+1.  **Keyword Gate**: Programmatically checks for forbidden terms (e.g., cross-track contamination such as citing a civil law article in a corporate tax task). If any forbidden term is present or required terms are missing, the score is capped at `0.0` immediately.
+2.  **Language Gate**: Leverages `langdetect` with a fallback heuristic to verify response language. Mismatched languages are zeroed out automatically.
+3.  **LLM Judge Ensemble**: Only if both gates pass, the response is sent to an ensemble of judges. The judges grade the response based on detailed, jurisdiction-specific rubrics.
+4.  **Fabrication Cap**: If the judge identifies a fabricated citation/authority, the score is clamped to `0.0` regardless of prose quality.
 
-*   **[`run_eval.py`](harness/run_eval.py)**: CLI entry point, concurrent async pipeline orchestration, rate limiting, and evaluation aggregation.
-*   **[`models.py`](harness/models.py)**: Client adapters for various model backends (`hf_local`, `openai_compat`, native `anthropic`, and GCP `vertex_anthropic`).
-*   **[`scorers.py`](harness/scorers.py)**: Programmatic verification scoring rules (MCQ extraction cascades, Belgian citation regex patterns, keyword gates, and language checks using `langdetect`).
-*   **[`judge.py`](harness/judge.py)**: Domain-specific legal reasoning rubrics and judge voting/ensemble routines.
-*   **[`stats.py`](harness/stats.py)**: Statistical calculations (95% bootstrap confidence intervals, two-sample significance tests, and bilingual parity ratios).
+### 3. Programmatic Scorer Cascades
+For structured tasks, specific scorers evaluate output correctness:
+*   **MCQ Answer Extraction**: Uses a 5-stage cascade (exact match ➔ last commitment ➔ final-line letter ➔ content word matching ➔ fallback) to accurately locate the final committed answer in reasoning/CoT models.
+*   **Citation Integrity**: Extracts and validates Belgian citations (ECLI, Code articles, Moniteur Belge) using a punctuation-insensitive normalizer.
+*   **Safety Calibration**: Uses language-specific markers to verify if the model correctly refuses harmful prompts (e.g., requests to draft fake deeds).
+
+### 4. Aggregation and Bootstrap Statistics
+After processing all items, the harness aggregates scores per track:
+*   **95% Bootstrap CIs**: Computes percentile-based bootstrap confidence intervals to check if differences between models are statistically significant. Warns if the sample size is too small (`n < 20`) for meaningful intervals.
+*   **Bilingual Parity**: Compares performance parity ratios between NL and FR tracks to evaluate bilingual equity.
 
 ---
 
@@ -78,28 +80,6 @@ The codebase is organized into five core modules under `harness/`:
 
 ---
 
-## Scoring methods
-
-| Method | Used by | Programmatic? |
-|---|---|---|
-| `mcq_exact` | Multiple-choice items | Yes — final-committed-answer extraction |
-| `language_adherence` | Bilingual parity track | Yes — heuristic, fastText recommended for release |
-| `citation_validity` | Citation integrity track | Yes — optional Juportal/Justel verifier |
-| `keyword_coverage` | Compliance tracks (gate) | Yes — gate only; judge sets quality score |
-| `rubric` | Open legal reasoning | No — requires an LLM judge |
-| `refusal` | Safety calibration | Yes — binary correctness |
-| `tool_call` | Function calling | Partial — judge scores argument quality |
-
-`mcq_exact` implements a **final-committed-answer** strategy: for reasoning models that produce chain-of-thought before committing, it scans for the LAST commitment pattern rather than the first letter.
-
----
-
-## Quickstart
-
-New here? See [docs/quickstart.md](docs/quickstart.md) for a step-by-step guide — install, run the harness on the synthetic sample items, and read the results in under 5 minutes.
-
----
-
 ## Running the harness on your own items
 
 You supply a JSONL file where each line is an item conforming to [`schema/eval_item.schema.json`](schema/eval_item.schema.json). The harness calls your model, scores each item, and writes a per-item JSONL and a `summary.json`.
@@ -113,13 +93,11 @@ pip install -e .
 ```
 
 If you are using the **Vertex AI judge path** (GCP ADC auth), add the `vertex` extra:
-
 ```bash
 pip install -e ".[vertex]"
 ```
 
 If you are using a **local HuggingFace checkpoint** as the model (`kind: hf_local`), add the `local` extra:
-
 ```bash
 pip install -e ".[local]"
 ```
@@ -131,7 +109,8 @@ be-lexbench \
   --items your_items.jsonl \
   --model '{"kind":"openai_compat","model_name":"your-model-name","base_url":"http://localhost:8000/v1"}' \
   --run-id your-model-v1 \
-  --out-dir ./results
+  --out-dir ./results \
+  --concurrency 4
 ```
 
 **With the canonical judge (Claude Sonnet 4.6 — recommended):**
@@ -144,7 +123,9 @@ be-lexbench \
   --model '{"kind":"openai_compat","model_name":"your-model-name","base_url":"http://localhost:8000/v1"}' \
   --judge '{"kind":"anthropic","model_name":"claude-sonnet-4-6","api_key_env":"ANTHROPIC_API_KEY"}' \
   --run-id your-model-v1 \
-  --out-dir ./results
+  --out-dir ./results \
+  --concurrency 4 \
+  --rpm 120
 ```
 
 ---
