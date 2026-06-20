@@ -1,0 +1,64 @@
+name: Evaluation Set Access Request
+description: Request access to the gated be-lexbench item bank (see docs/data_access.md)
+title: "[Access Request] "
+labels: ["access-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for your interest in be-lexbench.
+
+        **This request is public.** Do not include private contact details (email,
+        phone) in this form — after review, a maintainer will respond on this issue
+        to arrange delivery privately.
+
+        Before submitting, please read
+        [docs/data_access.md](https://github.com/BE-LexBench/be-lexbench/blob/main/docs/data_access.md)
+        and [DATA_LICENSE.md](https://github.com/BE-LexBench/be-lexbench/blob/main/DATA_LICENSE.md).
+  - type: input
+    id: organization
+    attributes:
+      label: Organization
+      description: Legal name of the requesting organization, or "independent researcher"
+      placeholder: e.g. Example University, Faculty of Law
+    validations:
+      required: true
+  - type: input
+    id: role
+    attributes:
+      label: Your role
+      description: Your role or title within the organization
+      placeholder: e.g. Research scientist, ML engineer, Professor
+    validations:
+      required: true
+  - type: dropdown
+    id: intended-use
+    attributes:
+      label: Intended use
+      options:
+        - Self-evaluation of our own model(s)
+        - Academic research
+        - Regulatory / compliance assessment
+        - Other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: use-details
+    attributes:
+      label: Use details
+      description: >-
+        Briefly describe how you plan to use the evaluation set and which
+        model(s) you intend to evaluate.
+    validations:
+      required: true
+  - type: checkboxes
+    id: agreements
+    attributes:
+      label: Agreements
+      options:
+        - label: I have read and agree to the data use terms in DATA_LICENSE.md
+          required: true
+        - label: I will not use the item bank for model training, redistribute it, or publish its contents
+          required: true
+        - label: I understand that official scoring on the held-out split is coordinated with the maintainers and is not run independently (docs/data_access.md)
+          required: true

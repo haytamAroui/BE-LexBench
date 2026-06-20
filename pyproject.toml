@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "be-lexbench"
+version = "1.0.0"
+description = "Not BIG-Bench. A jurisdiction-scoped benchmark on 14 Belgian legal tracks."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Haytam Aroui" },
+]
+keywords = [
+  "llm-evaluation",
+  "benchmarking",
+  "belgian-law",
+  "legal-ai",
+  "bilingual",
+  "nlp",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # OpenAI-compatible inference client (OpenAICompatClient) — requests.post
+    "requests",
+    # LLM judge: AnthropicClient and VertexAnthropicClient both import from anthropic
+    "anthropic",
+    # Item validation against eval_item.schema.json at load time
+    "jsonschema",
+]
+
+[project.optional-dependencies]
+# anthropic[vertex] means the anthropic package WITH its vertex extra (not a
+# separate package) — adds google-cloud-aiplatform for GCP ADC auth
+vertex = ["anthropic[vertex]"]
+# Local HuggingFace checkpoint inference (HFLocalClient only)
+local = ["torch>=2.0", "transformers>=4.40", "peft"]
+
+[project.urls]
+Repository = "https://github.com/BE-LexBench/be-lexbench"
+Issues = "https://github.com/BE-LexBench/be-lexbench/issues"
+Changelog = "https://github.com/BE-LexBench/be-lexbench/blob/main/CHANGELOG.md"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "single"
+
+[project.scripts]
+be-lexbench = "harness.run_eval:main"
+
+# NOTE: new subpackages under harness/ must be added to this list;
+# auto-discovery is disabled because this mapping excludes data/ and schema/.
+[tool.setuptools]
+packages = ["harness"]
+
+[tool.setuptools.package-data]
+# Exclude data files from the wheel — they are never part of the installed package.
+harness = []

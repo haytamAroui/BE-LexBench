@@ -1,0 +1,8 @@
+# Dependencies are defined in pyproject.toml — install with:
+#   pip install git+https://github.com/BE-LexBench/be-lexbench.git          # core
+#   pip install "be-lexbench[vertex] @ git+https://github.com/BE-LexBench/be-lexbench.git"  # + Vertex AI
+#   pip install "be-lexbench[local] @ git+https://github.com/BE-LexBench/be-lexbench.git"   # + HF local
+# or, in a local checkout:
+#   pip install -e .            # core deps
+#   pip install -e ".[vertex]"  # + Vertex AI judge path
+#   pip install -e ".[local]"   # + local HuggingFace checkpoint inference

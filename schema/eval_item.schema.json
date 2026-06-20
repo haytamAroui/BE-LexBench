@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "be-lexbench eval item",
+  "type": "object",
+  "required": ["id", "track", "language", "difficulty", "format", "prompt", "scoring", "provenance"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "track": {
+      "type": "string",
+      "enum": [
+        "bilingual_parity",
+        "belgian_civil_law",
+        "corporate_law_wvv",
+        "market_practices_wer",
+        "competition_law_bma",
+        "financial_compliance",
+        "gdpr_digital_compliance",
+        "employment_social_law",
+        "insolvency_restructuring",
+        "administrative_law",
+        "constitutional_federalism",
+        "citation_integrity",
+        "safety_calibration",
+        "grounded_rag"
+      ]
+    },
+    "language": { "type": "string", "enum": ["en", "fr", "nl"] },
+    "parity_group": { "type": ["string", "null"] },
+    "difficulty": { "type": "string", "enum": ["core", "applied", "expert"] },
+    "jurisdiction": { "type": "string" },
+    "format": { "type": "string", "enum": ["mcq", "open", "tool_call", "rag"] },
+    "prompt": { "type": "string", "minLength": 1 },
+    "system": { "type": ["string", "null"] },
+    "context": { "type": ["string", "array", "null"] },
+    "tools": { "type": ["array", "null"] },
+    "choices": { "type": ["array", "null"], "items": { "type": "string" } },
+    "scoring": {
+      "type": "object",
+      "required": ["method"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["mcq_exact", "language_adherence", "citation_validity", "keyword_coverage", "rubric", "refusal", "tool_call"]
+        },
+        "rubric_id": { "type": ["string", "null"] },
+        "answer": { "type": ["string", "null"] },
+        "reference": { "type": ["string", "null"] },
+        "must_include": { "type": "array", "items": { "type": "string" } },
+        "must_not_include": { "type": "array", "items": { "type": "string" } },
+        "valid_citations": { "type": "array", "items": { "type": "string" } },
+        "expected_refusal": { "type": ["boolean", "null"] },
+        "expected_tool": { "type": ["string", "null"] },
+        "expected_args": { "type": ["object", "null"] }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source", "canary"],
+      "properties": {
+        "author": { "type": ["string", "null"] },
+        "validated_by": { "type": ["string", "null"], "description": "MUST be non-null before publication" },
+        "review_date": { "type": ["string", "null"] },
+        "source": { "type": "string" },
+        "canary": { "type": "string" }
+      }
+    }
+  }
+}

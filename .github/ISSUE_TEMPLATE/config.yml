@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: General questions & discussions
+    url: https://github.com/BE-LexBench/be-lexbench/discussions
+    about: Ask questions, share results, or discuss the benchmark methodology here.

@@ -1,0 +1,56 @@
+name: Feature Request
+description: Suggest a new scorer, track, model client, or harness capability
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. be-lexbench is a research-stage benchmark, so new
+        scorers and tracks require SME review before they can affect official scores.
+        Please describe your idea clearly so we can assess the scope.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New track / scoring method
+        - New model client kind
+        - Harness / CLI improvement
+        - Statistics / reporting
+        - Documentation
+        - CI / packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the gap or limitation you are running into.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe what you want to happen and why it fits the benchmark's goals.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you thought about.
+
+  - type: checkboxes
+    id: scope-check
+    attributes:
+      label: Scope acknowledgement
+      options:
+        - label: I understand that changes to scoring logic, rubrics, or the item schema require maintainer approval and may affect published leaderboard numbers
+          required: false
