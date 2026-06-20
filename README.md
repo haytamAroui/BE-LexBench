@@ -17,6 +17,46 @@ The item bank, gold answers, and held-out scoring split are not published here. 
 
 ---
 
+## Architecture Overview
+
+The `be-lexbench` harness is organized as a modular, split-design pipeline. It loads evaluation items, validates them against the schema, invokes model clients, scores responses using programmatic or judge-based rules, and aggregates the results with bootstrap confidence intervals.
+
+```mermaid
+graph TD
+    A["CLI Entry<br>run_eval.py → main()"] --> B["Load Items<br>JSONL + Schema Validation"]
+    B --> C["Model Client<br>models.py → build_client()"]
+    C --> D["Generate Response<br>with retry + backoff"]
+    D --> E["score_one()<br>Routing Engine"]
+    E --> F{"Scoring Method?"}
+    F -->|rubric| G["Keyword Gate → Language Gate → LLM Judge"]
+    F -->|mcq_exact| H["Final-Committed-Answer Extraction"]
+    F -->|citation_validity| I["Citation Pattern Matching + Gold Match"]
+    F -->|refusal| J["Refusal Marker Detection"]
+    F -->|tool_call| K["Tool-Call Parsing (4 formats)"]
+    F -->|keyword_coverage| L["Must-Include / Must-Not Gate"]
+    F -->|language_adherence| M["NL/FR/EN Detection"]
+    G --> N["Aggregate → summary.json"]
+    H --> N
+    I --> N
+    J --> N
+    K --> N
+    L --> N
+    M --> N
+    N --> O["Bootstrap CIs + Bilingual Parity"]
+```
+
+### Module Architecture
+
+The codebase is organized into five core modules under `harness/`:
+
+*   **[`run_eval.py`](harness/run_eval.py)**: CLI entry point, concurrent async pipeline orchestration, rate limiting, and evaluation aggregation.
+*   **[`models.py`](harness/models.py)**: Client adapters for various model backends (`hf_local`, `openai_compat`, native `anthropic`, and GCP `vertex_anthropic`).
+*   **[`scorers.py`](harness/scorers.py)**: Programmatic verification scoring rules (MCQ extraction cascades, Belgian citation regex patterns, keyword gates, and language checks using `langdetect`).
+*   **[`judge.py`](harness/judge.py)**: Domain-specific legal reasoning rubrics and judge voting/ensemble routines.
+*   **[`stats.py`](harness/stats.py)**: Statistical calculations (95% bootstrap confidence intervals, two-sample significance tests, and bilingual parity ratios).
+
+---
+
 ## Tracks
 
 | # | Track | What it measures |
