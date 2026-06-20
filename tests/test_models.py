@@ -201,6 +201,20 @@ class TestBuildClient:
         c = build_client(spec)
         assert c.chat_template_kwargs is None
 
+    def test_openai_compat_gemini_config(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+        spec = {
+            "kind": "openai_compat",
+            "model_name": "gemini-1.5-flash",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key_env": "GEMINI_API_KEY"
+        }
+        c = build_client(spec)
+        assert isinstance(c, OpenAICompatClient)
+        assert c.model_id == "gemini-1.5-flash"
+        assert c.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert c.api_key == "gemini-test-key"
+
     def test_openai_compat_send_tools_default_true(self):
         spec = {"kind": "openai_compat", "model_name": "m",
                 "base_url": "http://x/v1"}
