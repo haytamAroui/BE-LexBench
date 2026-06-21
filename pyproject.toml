@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "be-lexbench"
-version = "1.0.0"
+version = "1.0.1"
 description = "Not BIG-Bench. A jurisdiction-scoped benchmark on 14 Belgian legal tracks."
 readme = "README.md"
 license = { file = "LICENSE" }
