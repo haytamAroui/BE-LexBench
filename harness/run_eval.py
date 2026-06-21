@@ -192,8 +192,13 @@ def score_one(item: dict, response: str, judge_clients: list) -> dict:
     Non-rubric path (mcq_exact / language_adherence / citation_validity /
     keyword_coverage / refusal / tool_call):
       * The single programmatic scorer runs first.
-      * If ``prog['needs_judge']`` is True AND a judge is configured, the
-        final-score rule per method:
+      * If ``prog['needs_judge']`` is True:
+        - The Keyword Gate runs first (if method != keyword_coverage) to catch
+          contamination before the judge.
+        - The Language Gate runs next (if method != language_adherence) to catch
+          wrong language before the judge.
+        - On gate failure: ``final_score=0.0``, LLM judge is skipped.
+        - On pass, if a judge is configured, the final-score rule per method:
           - ``method='keyword_coverage'``: gate cap wins — if
             ``prog['score']==0.0``, ``final_score=0.0`` (judge can run but
             cap holds); on pass, ``final_score = jr['score01']``.
@@ -247,33 +252,51 @@ def score_one(item: dict, response: str, judge_clients: list) -> dict:
 
     prog = S.PROGRAMMATIC[method](response, item)
     result = {"programmatic": prog, "judge": None, "final_score": prog["score"]}
-    if prog.get("needs_judge") and judge_clients:
-        jr = J.judge_item(item, response, judge_clients)
-        result["judge"] = jr
-        if jr["score01"] is not None:
-            # For open/rubric items the judge sets the final score. For gated
-            # programmatic methods (keyword/tool/refusal) combine: a hard gate
-            # failure stays 0; otherwise the judge score governs quality.
-            if method in ("keyword_coverage",) and prog["score"] == 0.0:
-                result["final_score"] = 0.0  # required-term gate failed
-            elif method == "tool_call":
-                # name match (prog 0.5) + judged arg quality (other 0.5)
-                result["final_score"] = prog["score"] + 0.5 * jr["score01"]
-            elif method == "refusal":
-                # refusal correctness is binary; judge only annotates quality
+
+    if prog.get("needs_judge"):
+        # Run Keyword Gate if item format is open (unless this method IS keyword_coverage, which we already ran)
+        if item.get("format") == "open" and method != "keyword_coverage":
+            kw = S.PROGRAMMATIC["keyword_coverage"](response, item)
+            if kw["score"] == 0.0:
+                result["judge"] = {"status": "KEYWORD_GATE_FAILED", "reason": kw["detail"]}
+                result["final_score"] = 0.0
+                return result
+
+        # Run Language Gate if item format is open (unless this method IS language_adherence or tool_call)
+        if item.get("format") == "open" and method != "language_adherence" and method != "tool_call":
+            la = S.PROGRAMMATIC["language_adherence"](response, item)
+            if la["score"] == 0.0:
+                result["judge"] = {"status": "LANGUAGE_GATE_FAILED", "reason": la["detail"]}
+                result["final_score"] = 0.0
+                return result
+
+        if judge_clients:
+            jr = J.judge_item(item, response, judge_clients)
+            result["judge"] = jr
+            if jr["score01"] is not None:
+                # For open/rubric items the judge sets the final score. For gated
+                # programmatic methods (keyword/tool/refusal) combine: a hard gate
+                # failure stays 0; otherwise the judge score governs quality.
+                if method in ("keyword_coverage",) and prog["score"] == 0.0:
+                    result["final_score"] = 0.0  # required-term gate failed
+                elif method == "tool_call":
+                    # name match (prog 0.5) + judged arg quality (other 0.5)
+                    result["final_score"] = prog["score"] + 0.5 * jr["score01"]
+                elif method == "refusal":
+                    # refusal correctness is binary; judge only annotates quality
+                    result["final_score"] = prog["score"]
+                else:
+                    result["final_score"] = jr["score01"]
+        elif not judge_clients:
+            # No judge available. For methods whose PROGRAMMATIC score is authoritative
+            # (refusal correctness is binary; tool_call name-match is a real partial score),
+            # keep the programmatic score and note the judge was skipped (quality unscored).
+            if method in ("refusal", "tool_call"):
                 result["final_score"] = prog["score"]
+                result["judge"] = {"status": "NO_JUDGE_CONFIGURED_quality_unscored"}
             else:
-                result["final_score"] = jr["score01"]
-    elif prog.get("needs_judge") and not judge_clients:
-        # No judge available. For methods whose PROGRAMMATIC score is authoritative
-        # (refusal correctness is binary; tool_call name-match is a real partial score),
-        # keep the programmatic score and note the judge was skipped (quality unscored).
-        if method in ("refusal", "tool_call"):
-            result["final_score"] = prog["score"]
-            result["judge"] = {"status": "NO_JUDGE_CONFIGURED_quality_unscored"}
-        else:
-            result["final_score"] = None  # genuinely cannot finalize without a judge
-            result["judge"] = {"status": "NO_JUDGE_CONFIGURED"}
+                result["final_score"] = None  # genuinely cannot finalize without a judge
+                result["judge"] = {"status": "NO_JUDGE_CONFIGURED"}
     return result
 
 

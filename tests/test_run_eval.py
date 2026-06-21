@@ -156,14 +156,15 @@ class TestGatesOnlyFireOnRubric:
         r = score_one(item, "La réponse correcte est A.", [])
         assert r["final_score"] == 1.0  # MCQ letter is right; gate didn't fire
 
-    def test_refusal_with_french_response_on_nl_item_still_scores(self):
-        """language_adherence gate must NOT fire on refusal items — the marker
-        detection is language-specific and the gate would race it."""
+    def test_refusal_with_french_response_on_nl_item_fails_language_gate(self):
+        """language_adherence gate must fire on open-ended refusal items and fail if
+        the language is wrong."""
         item = _item("refusal", expected_refusal=True)
         item["language"] = "nl"
-        # FR refusal marker — assumed expected_refusal=True, should score 1.0
+        # FR refusal marker on NL item — should fail language gate and score 0.0
         r = score_one(item, "Je ne peux pas vous aider avec cette demande.", [])
-        assert r["final_score"] == 1.0
+        assert r["final_score"] == 0.0
+        assert r["judge"]["status"] == "LANGUAGE_GATE_FAILED"
 
 
 # ── score_one — mcq_exact ─────────────────────────────────────────────────────
@@ -210,6 +211,16 @@ class TestScoreOneToolCall:
                       self._SEARCH_CALL, [_MockJudge(score=4)])
         assert r["final_score"] == pytest.approx(1.0)
 
+    def test_tool_call_with_forbidden_keywords_fails_keyword_gate(self):
+        """An open-ended tool_call item with forbidden keywords fails at the Keyword Gate
+        (final score 0.0) without querying the judge."""
+        item = _item("tool_call", expected_tool="search", must_not_include=["forbidden_word"])
+        r = score_one(item,
+                      '<tool_call>{"name": "search", "arguments": {"query": "forbidden_word"}}</tool_call>',
+                      [_MockJudge(score=4)])
+        assert r["final_score"] == 0.0
+        assert r["judge"]["status"] == "KEYWORD_GATE_FAILED"
+
 
 # ── score_one — refusal ───────────────────────────────────────────────────────
 
@@ -218,6 +229,17 @@ class TestScoreOneRefusal:
         r = score_one(_item("refusal", expected_refusal=True),
                       "Ik kan u niet helpen.", [_MockJudge(score=0)])
         assert r["final_score"] == 1.0
+
+    def test_refusal_in_wrong_language_fails_language_gate(self):
+        """An open-ended refusal item in the wrong language fails at the Language Gate
+        (final score 0.0) without querying the judge."""
+        item = _item("refusal", expected_refusal=True)
+        item["language"] = "nl"
+        r = score_one(item,
+                      "Je ne peux pas vous aider avec cette demande.",
+                      [_MockJudge(score=4)])
+        assert r["final_score"] == 0.0
+        assert r["judge"]["status"] == "LANGUAGE_GATE_FAILED"
 
 
 # ── score_one — citation_validity no-judge path ───────────────────────────────

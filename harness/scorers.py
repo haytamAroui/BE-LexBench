@@ -245,11 +245,11 @@ def mcq_exact(response: str, item: dict) -> dict:
 #     ties. Function words are the disambiguating signal.
 _NL_MARKERS = (" de ", " het ", " een ", " en ", " van ", " zijn ", " niet ",
                " voor ", " door ", " artikel ", " volgens ", " wet ",
-               " overeenkomstig ", " vennootschap ")
+               " overeenkomstig ", " vennootschap ", " ik ", " weiger ", " kan niet ")
 _FR_MARKERS = (" le ", " la ", " les ", " des ", " une ", " est ", " selon ",
                " du ", " par ", " l'article ", " loi ", " société ",
-               " conformément ")
-_EN_MARKERS = (" the ", " and ", " of ", " is ", " under ", " must ", " which ")
+               " conformément ", " je ", " refuse ", " peux pas ")
+_EN_MARKERS = (" the ", " and ", " of ", " is ", " under ", " must ", " which ", " i ", " refuse ", " cannot ")
 
 
 def _detect_language(text: str) -> str:
@@ -263,6 +263,8 @@ def _detect_language(text: str) -> str:
     if _HAS_LANGDETECT:
         try:
             det = langdetect.detect(text)
+            if det == "af":
+                det = "nl"
             if det in ('nl', 'fr', 'en'):
                 return det
         except Exception:
